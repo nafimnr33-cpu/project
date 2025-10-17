@@ -4,7 +4,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey, X-Device-Key",
 };
 
 Deno.serve(async (req: Request) => {
@@ -22,28 +22,27 @@ Deno.serve(async (req: Request) => {
     );
 
     if (req.method === "GET") {
-      const url = new URL(req.url);
-      const device_id = url.searchParams.get("device_id");
+      const apiKey = req.headers.get("X-Device-Key");
 
-      if (!device_id) {
+      if (!apiKey) {
         return new Response(
-          JSON.stringify({ error: "device_id parameter is required" }),
+          JSON.stringify({ error: "Missing device API key in X-Device-Key header" }),
           {
-            status: 400,
+            status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           }
         );
       }
 
-      const { data, error } = await supabase
+      const { data: device, error } = await supabase
         .from("devices")
         .select("*")
-        .eq("device_id", device_id)
+        .eq("api_key", apiKey)
         .maybeSingle();
 
-      if (error || !data) {
+      if (error || !device) {
         return new Response(
-          JSON.stringify({ error: "Device not found" }),
+          JSON.stringify({ error: "Device not found or invalid API key" }),
           {
             status: 404,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -52,7 +51,18 @@ Deno.serve(async (req: Request) => {
       }
 
       return new Response(
-        JSON.stringify({ success: true, device: data }),
+        JSON.stringify({
+          success: true,
+          device: {
+            id: device.id,
+            name: device.name,
+            device_type: device.device_type,
+            status: device.status,
+            is_bound: device.is_bound,
+            config: device.config,
+            metadata: device.metadata,
+          }
+        }),
         {
           status: 200,
           headers: { ...corsHeaders, "Content-Type": "application/json" },

@@ -4,7 +4,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey, X-Device-Key",
 };
 
 Deno.serve(async (req: Request) => {
@@ -22,14 +22,13 @@ Deno.serve(async (req: Request) => {
     );
 
     if (req.method === "POST") {
-      const body = await req.json();
-      const { project_id, device_id, data_type, data } = body;
+      const apiKey = req.headers.get("X-Device-Key");
 
-      if (!project_id || !device_id || !data_type || !data) {
+      if (!apiKey) {
         return new Response(
-          JSON.stringify({ error: "Missing required fields" }),
+          JSON.stringify({ error: "Missing device API key in X-Device-Key header" }),
           {
-            status: 400,
+            status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           }
         );
@@ -37,49 +36,26 @@ Deno.serve(async (req: Request) => {
 
       const { data: device } = await supabase
         .from("devices")
-        .select("device_id")
-        .eq("device_id", device_id)
+        .select("id, user_id, is_bound, device_type")
+        .eq("api_key", apiKey)
         .maybeSingle();
 
       if (!device) {
         return new Response(
-          JSON.stringify({ error: "Device not registered. Please register first using /esp32-register" }),
+          JSON.stringify({ error: "Invalid device API key" }),
           {
-            status: 404,
+            status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           }
         );
       }
 
-      let table: string;
-      let insertData: any;
+      const body = await req.json();
+      const { data: telemetryData } = body;
 
-      if (data_type === "water_pump") {
-        table = "wp_samples";
-        insertData = {
-          project_id,
-          device_id,
-          ts_utc: data.ts_utc || new Date().toISOString(),
-          level_pct: data.level_pct,
-          pump_on: data.pump_on,
-          flow_out_lpm: data.flow_out_lpm,
-          flow_in_lpm: data.flow_in_lpm,
-          net_flow_lpm: data.net_flow_lpm,
-          manual_switch_status: data.manual_switch_status !== undefined ? data.manual_switch_status : 0,
-        };
-      } else if (data_type === "smart_light") {
-        table = "sl_samples";
-        insertData = {
-          project_id,
-          device_id,
-          ts_utc: data.ts_utc || new Date().toISOString(),
-          brightness: data.brightness,
-          power_w: data.power_w,
-          color_temp: data.color_temp,
-        };
-      } else {
+      if (!telemetryData) {
         return new Response(
-          JSON.stringify({ error: "Invalid data_type" }),
+          JSON.stringify({ error: "Missing telemetry data" }),
           {
             status: 400,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -87,8 +63,15 @@ Deno.serve(async (req: Request) => {
         );
       }
 
+      const insertData = {
+        device_id: device.id,
+        user_id: device.user_id,
+        data: telemetryData,
+        timestamp: new Date().toISOString(),
+      };
+
       const { data: result, error } = await supabase
-        .from(table)
+        .from("device_telemetry")
         .insert(insertData)
         .select()
         .single();
@@ -103,22 +86,14 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      const { data: deviceData } = await supabase
-        .from("devices")
-        .select("pump_upper_threshold")
-        .eq("device_id", device_id)
-        .maybeSingle();
-
-      const updateData: any = { updated_at: new Date().toISOString() };
-
-      if (data_type === "water_pump" && deviceData && data.level_pct >= deviceData.pump_upper_threshold) {
-        updateData.manual_switch = 0;
-      }
-
       const { error: updateError } = await supabase
         .from("devices")
-        .update(updateData)
-        .eq("device_id", device_id);
+        .update({
+          status: 'online',
+          last_seen: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", device.id);
 
       return new Response(
         JSON.stringify({ success: true, data: result }),
